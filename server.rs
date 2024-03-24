@@ -121,6 +121,6 @@ async fn new_notification(
 #[get("/icon/<app>")]
 pub async fn app_icon(app: &str) -> Option<NamedFile> {
     let mut path = PathBuf::from("../plugins/timeline_plugin_notification/icons/");
-    path.push(app);
+    path.push(app.to_lowercase());
     NamedFile::open(path).await.ok()
 }
