@@ -25,7 +25,7 @@ impl crate::plugin_manager::Plugin for Plugin {
                 view! {
                     <div style="display: flex; flex-direction: row; width: 100%; gap: calc(var(--contentSpacing) * 0.5); background-color: var(--accentColor2);align-items: start;">
                     <img style="width: calc(var(--contentSpacing) * 5); aspect-ratio: 1;" src=move || {crate::api::relative_url(&format!("/api/plugin/timeline_plugin_notification/icon/{}.ico", data.app)).unwrap().to_string()}/>
-                    <div style="padding-top: calc(var(--contentSpacing) * 0.5); padding-bottom: calc(var(--contentSpacing) * 0.5); color: var(--lightColor);">
+                    <div style="padding-top: calc(var(--contentSpacing) * 0.5); padding-bottom: calc(var(--contentSpacing) * 0.5); color: var(--lightColor); overflow: hidden;">
                     <h3>{
                         move || {data.title.clone()}
                     }</h3>
