@@ -114,7 +114,10 @@ async fn new_notification(
         .await
     {
         Ok(_) => (Status::Ok, Json(Ok(()))),
-        Err(e) => (Status::InternalServerError, Json(Err(e.into()))),
+        Err(e) => {
+            crate::error::error(database.inner().clone(), &e, Some(<Plugin as crate::Plugin>::get_type()));
+            (Status::InternalServerError, Json(Err(e.into())))
+        },
     }
 }
 
