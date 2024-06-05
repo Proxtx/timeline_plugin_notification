@@ -21,7 +21,14 @@ use {
     },
 };
 
+#[derive(Deserialize, Clone)]
+pub struct ConfigData {
+    pub apps_file: PathBuf,
+    pub app_icon_files: PathBuf
+}
+
 pub struct Plugin {
+    config: ConfigData,
     plugin_data: PluginData,
 }
 
@@ -30,7 +37,18 @@ impl crate::Plugin for Plugin {
     where
         Self: Sized,
     {
-        Plugin { plugin_data: data }
+        let config: ConfigData = toml::Value::try_into(
+            data.config
+                .clone()
+                .expect("Failed to init notification plugin! No config was provided!"),
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "Unable to init notification plugin! Provided config does not fit the requirements: {}",
+                e
+            )
+        });
+        Plugin { plugin_data: data, config }
     }
 
     fn get_type() -> types::api::AvailablePlugins
