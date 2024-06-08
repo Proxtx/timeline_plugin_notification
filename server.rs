@@ -140,8 +140,15 @@ async fn new_notification(
 }
 
 #[get("/icon/<app>")]
-pub async fn app_icon(app: &str) -> Option<NamedFile> {
-    let mut path = PathBuf::from("../plugins/timeline_plugin_notification/icons/");
-    path.push(app.to_lowercase());
-    NamedFile::open(path).await.ok()
+pub async fn app_icon(app: &str, config: &State<ConfigData>) -> Option<NamedFile> {
+    let mut path = config.app_icon_files.clone();
+    path.push(app);
+    match try_exists(&path).await {
+        Ok(true) => NamedFile::open(path).await.ok(),
+        Err(_) | Ok(false) => {
+            let mut path = PathBuf::from("../plugins/timeline_plugin_notification/icons/");
+            path.push(app.to_lowercase());
+            NamedFile::open(path).await.ok()
+        }
+    }
 }
