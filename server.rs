@@ -19,6 +19,7 @@ use {
         api::{APIResult, APIError, AvailablePlugins, CompressedEvent},
         timing::Timing,
     },
+    tokio::fs::try_exists
 };
 
 #[derive(Deserialize, Clone)]
