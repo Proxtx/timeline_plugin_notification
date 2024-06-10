@@ -97,6 +97,10 @@ impl crate::Plugin for Plugin {
             Ok(result)
         })
     }
+
+    fn rocket_build_access(&self, rocket: rocket::Rocket<rocket::Build>) -> rocket::Rocket<rocket::Build> {
+        rocket.manage(self.config.clone())
+    }
 }
 
 #[derive(Deserialize, Serialize)]
