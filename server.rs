@@ -14,12 +14,12 @@ use {
         fs::NamedFile
     },
     serde::{Deserialize, Serialize},
-    std::{path::PathBuf, sync::Arc},
+    std::{path::PathBuf, sync::Arc, collections::HashMap, path::Path},
     types::{
         api::{APIResult, APIError, AvailablePlugins, CompressedEvent},
         timing::Timing,
     },
-    tokio::fs::try_exists
+    tokio::{fs::{try_exists, File}, io::AsyncReadExt}
 };
 
 #[derive(Deserialize, Clone)]
@@ -31,6 +31,7 @@ pub struct ConfigData {
 pub struct Plugin {
     config: ConfigData,
     plugin_data: PluginData,
+    apps_map: Arc<AppsMap>
 }
 
 impl crate::Plugin for Plugin {
@@ -49,7 +50,15 @@ impl crate::Plugin for Plugin {
                 e
             )
         });
-        Plugin { plugin_data: data, config }
+
+        let apps_map = match AppsMap::new(&config.apps_file).await {
+            Ok(v) => v,
+            Err(e) => {
+                panic!("Unable to init app names lookup table: {}", e);
+            }
+        };
+
+        Plugin { plugin_data: data, config, apps_map: Arc::new(apps_map) }
     }
 
     fn get_type() -> types::api::AvailablePlugins
@@ -78,6 +87,7 @@ impl crate::Plugin for Plugin {
         let filter = Database::generate_range_filter(query_range);
         let plg_filter = Database::generate_find_plugin_filter(AvailablePlugins::timeline_plugin_notification);
         let filter = Database::combine_documents(filter, plg_filter);
+        let apps_map = self.apps_map.clone();
         let database = self.plugin_data.database.clone();
         Box::pin(async move {
             let mut cursor = database
@@ -86,7 +96,12 @@ impl crate::Plugin for Plugin {
                 .await?;
             let mut result = Vec::new();
             while let Some(v) = cursor.next().await {
-                let t = v?;
+                let mut t = v?;
+                t.event.app = match apps_map.get_app_name(&t.event.app) {
+                    Some(v) => v.to_string(),
+                    None => t.event.app
+                };
+
                 result.push(CompressedEvent {
                     title: t.event.app.clone(),
                     time: t.timing,
@@ -155,5 +170,35 @@ pub async fn app_icon(app: &str, config: &State<ConfigData>) -> Option<NamedFile
             path.push(app.to_lowercase());
             NamedFile::open(path).await.ok()
         }
+    }
+}
+
+struct AppsMap {
+    apps_map: HashMap<String, String>
+}
+
+impl AppsMap {
+    pub async fn new (path: &Path) -> Result<AppsMap, String> {
+        let apps_map = match File::open(path).await {
+            Ok(mut v) => {  
+                let mut str = String::new();
+                if let Err(e) = v.read_to_string(&mut str).await {
+                    return Err(format!("Error reading apps file: {}", e));
+                }
+
+                str.split('\n').filter_map(|line| {
+                    line.split_once(':').map(|v| (v.0.to_string(), v.1.to_string()))
+                }).collect()
+            },
+            Err(e) => {
+                return Err(format!("Error reading apps file: {}", e));
+            }
+        };
+
+        Ok(AppsMap { apps_map })
+    }
+
+    pub fn get_app_name (&self, package: &str) -> Option<&String> {
+        self.apps_map.get(package)
     }
 }
