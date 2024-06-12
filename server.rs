@@ -96,14 +96,14 @@ impl crate::Plugin for Plugin {
                 .await?;
             let mut result = Vec::new();
             while let Some(v) = cursor.next().await {
-                let mut t = v?;
-                t.event.app = match apps_map.get_app_name(&t.event.app) {
+                let t = v?;
+                let app = match apps_map.get_app_name(&t.event.app) {
                     Some(v) => v.to_string(),
-                    None => t.event.app
+                    None => t.event.app.clone()
                 };
 
                 result.push(CompressedEvent {
-                    title: t.event.app.clone(),
+                    title: app,
                     time: t.timing,
                     data: Box::new(t.event),
                 })
@@ -167,7 +167,7 @@ pub async fn app_icon(app: &str, config: &State<ConfigData>) -> Option<NamedFile
         Ok(true) => NamedFile::open(path).await.ok(),
         Err(_) | Ok(false) => {
             let mut path = PathBuf::from("../plugins/timeline_plugin_notification/icons/");
-            path.push(app.to_lowercase());
+            path.push(format!("{}.ico", app.to_lowercase()));
             NamedFile::open(path).await.ok()
         }
     }

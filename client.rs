@@ -25,11 +25,11 @@ impl crate::plugin_manager::Plugin for Plugin {
                 view! {
                     <div style="display: flex; flex-direction: row; width: 100%; gap: calc(var(--contentSpacing) * 0.5); background-color: var(--accentColor2);align-items: start;">
                         <img
-                            style="width: calc(var(--contentSpacing) * 5); aspect-ratio: 1;"
+                            style="width: calc(var(--contentSpacing) * 5); aspect-ratio: 1; padding: var(--contentSpacing);"
                             src=move || {
                                 crate::api::relative_url(
                                         &format!(
-                                            "/api/plugin/timeline_plugin_notification/icon/{}.ico",
+                                            "/api/plugin/timeline_plugin_notification/icon/{}",
                                             data.app,
                                         ),
                                     )
