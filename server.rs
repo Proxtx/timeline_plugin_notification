@@ -168,7 +168,10 @@ pub async fn app_icon(app: &str, config: &State<ConfigData>) -> Option<NamedFile
         Err(_) | Ok(false) => {
             let mut path = PathBuf::from("../plugins/timeline_plugin_notification/icons/");
             path.push(format!("{}.ico", app.to_lowercase()));
-            NamedFile::open(path).await.ok()
+            match try_exists(&path).await {
+                Ok(true) => NamedFile::open(path).await.ok(),
+                Err(_) | Ok(false) => NamedFile::open(PathBuf::from("../plugins/timeline_plugin_notification/icon.svg"))
+            }
         }
     }
 }
