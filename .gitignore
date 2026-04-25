@@ -12,3 +12,10 @@ Cargo.lock
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
+
+# Trunk build output
+client/dist/
+
+# Local runtime data + local config
+data/
+config.toml

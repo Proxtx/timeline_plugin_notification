@@ -1,191 +1,208 @@
-use {
-    rocket::{
-        fs::NamedFile, futures, get, http::Status, routes, serde::json::Json, State
-    }, serde::{Deserialize, Serialize}, server_api::{
-        config::Config, db::{Database, Event}, external::{futures::StreamExt, tokio::{fs::{try_exists, File}, io::AsyncReadExt}, toml, types::{api::{APIError, APIResult, CompressedEvent}, available_plugins::AvailablePlugins, external::{chrono::Utc, serde_json}, timing::{TimeRange, Timing}}}, plugin::{PluginData, PluginTrait}
-    }, std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc}
+//! Notification plugin: external clients (a phone, a script, an OS daemon)
+//! POST `/notification/<password>/<app>/<title>/<content>` to record a
+//! notification. Stored notifications come back through `/events`. App
+//! display names + icons are read from on-disk lookup files.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use chrono::Utc;
+use rocket::fs::NamedFile;
+use rocket::http::Status;
+use rocket::serde::json::Json;
+use rocket::{get, routes, Build, Rocket, Route, State};
+use serde::{Deserialize, Serialize};
+use tokio::fs::{try_exists, File};
+use tokio::io::AsyncReadExt;
+
+use timeline_plugin_sdk::auth::AuthedClient;
+use timeline_plugin_sdk::launch::PluginState;
+use timeline_plugin_sdk::{
+    APIError, APIResult, CompressedEvent, Context, Manifest, Plugin, Style, StoredEvent,
+    TimeRange, Timing,
 };
 
-#[derive(Deserialize, Clone)]
-pub struct ConfigData {
+#[derive(Debug, Clone, Deserialize)]
+pub struct NotificationConfig {
+    /// Path to a `package_name:Display Name` file (one mapping per line).
     pub apps_file: PathBuf,
-    pub app_icon_files: PathBuf
+    /// Directory containing per-app icon files keyed by package name.
+    pub app_icon_files: PathBuf,
+    /// Optional path to a default icon to fall back to when no app-specific
+    /// file is found.
+    #[serde(default)]
+    pub default_icon: Option<PathBuf>,
+    /// Password external clients must supply in the URL to record a
+    /// notification. Distinct from the main-server cookie password.
+    pub notification_password: String,
 }
 
-pub struct Plugin {
-    config: ConfigData,
-    plugin_data: PluginData,
-    apps_map: Arc<AppsMap>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Notification {
+    pub app: String,
+    pub title: String,
+    pub content: String,
 }
 
-impl PluginTrait for Plugin {
-    async fn new(data: crate::PluginData) -> Self
-    where
-        Self: Sized,
-    {
-        let config: ConfigData = toml::Value::try_into(
-            data.config
-                .clone()
-                .expect("Failed to init notification plugin! No config was provided!"),
-        )
-        .unwrap_or_else(|e| {
-            panic!(
-                "Unable to init notification plugin! Provided config does not fit the requirements: {}",
-                e
-            )
-        });
+pub struct NotificationPlugin {
+    ctx: Context,
+    config: NotificationConfig,
+    apps_map: Arc<AppsMap>,
+}
 
-        let apps_map = match AppsMap::new(&config.apps_file).await {
-            Ok(v) => v,
-            Err(e) => {
-                panic!("Unable to init app names lookup table: {}", e);
-            }
-        };
-
-        Plugin { plugin_data: data, config, apps_map: Arc::new(apps_map) }
-    }
-
-    fn get_type() -> AvailablePlugins
-    where
-        Self: Sized,
-    {
-        AvailablePlugins::timeline_plugin_notification
-    }
-
-    fn get_routes() -> Vec<rocket::Route>
-    where
-        Self: Sized,
-    {
-        routes![new_notification, app_icon]
-    }
-
-    fn get_compressed_events(
-        &self,
-        query_range: &TimeRange,
-    ) -> std::pin::Pin<
-        Box<
-            dyn futures::Future<Output = APIResult<Vec<CompressedEvent>>>
-                + Send,
-        >,
-    > {
-        let filter = Database::generate_range_filter(query_range);
-        let plg_filter = Database::generate_find_plugin_filter(AvailablePlugins::timeline_plugin_notification);
-        let filter = Database::combine_documents(filter, plg_filter);
-        let apps_map = self.apps_map.clone();
-        let database = self.plugin_data.database.clone();
-        Box::pin(async move {
-            let mut cursor = database
-                .get_events::<Notification>()
-                .find(filter, None)
-                .await?;
-            let mut result = Vec::new();
-            while let Some(v) = cursor.next().await {
-                let t = v?;
-                let app = match apps_map.get_app_name(&t.event.app) {
-                    Some(v) => v.to_string(),
-                    None => t.event.app.clone()
-                };
-
-                result.push(CompressedEvent {
-                    title: app,
-                    time: t.timing,
-                    data: serde_json::to_value(t.event).unwrap(),
-                })
-            }
-
-            Ok(result)
+impl Plugin for NotificationPlugin {
+    async fn new(ctx: Context) -> anyhow::Result<Self> {
+        let config: NotificationConfig = ctx
+            .extra
+            .clone()
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("plugin config: {}", e))?;
+        let apps_map = AppsMap::load(&config.apps_file).await?;
+        Ok(Self {
+            ctx,
+            config,
+            apps_map: Arc::new(apps_map),
         })
     }
 
-    fn rocket_build_access(&self, rocket: rocket::Rocket<rocket::Build>) -> rocket::Rocket<rocket::Build> {
-        rocket.manage(self.config.clone())
+    fn manifest(&self) -> Manifest {
+        Manifest {
+            name: self.ctx.config.name.clone(),
+            display_name: self
+                .ctx
+                .config
+                .display_name
+                .clone()
+                .unwrap_or_else(|| "Notifications".into()),
+            style: Style::Acc2,
+            icon: None,
+            web_entry: Some("timeline_plugin_notification_client.js".into()),
+        }
+    }
+
+    async fn events(&self, range: TimeRange) -> APIResult<Vec<CompressedEvent>> {
+        let stored = self
+            .ctx
+            .db
+            .query_range_typed::<Notification>(&range)
+            .await
+            .map_err(|e| APIError::DatabaseError(e.to_string()))?;
+        let mut out = Vec::with_capacity(stored.len());
+        for ev in stored {
+            let app_display = self
+                .apps_map
+                .get(&ev.data.app)
+                .cloned()
+                .unwrap_or_else(|| ev.data.app.clone());
+            out.push(CompressedEvent {
+                title: app_display,
+                time: ev.time,
+                data: serde_json::to_value(&ev.data)?,
+            });
+        }
+        Ok(out)
+    }
+
+    fn routes(&self) -> Vec<Route> {
+        routes![new_notification, app_icon]
+    }
+
+    fn rocket_attach(&self, rocket: Rocket<Build>) -> Rocket<Build> {
+        rocket.manage(PluginCfgState(self.config.clone()))
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct Notification {
-    app: String,
-    title: String,
-    content: String,
-}
+// ----- routes -----
+
+struct PluginCfgState(NotificationConfig);
 
 #[get("/notification/<password>/<app>/<title>/<content>")]
 async fn new_notification(
+    _auth: AuthedClient,
     password: &str,
     app: &str,
     title: &str,
     content: &str,
-    config: &State<Config>,
-    database: &State<Arc<Database>>,
+    state: &State<PluginState>,
+    cfg: &State<PluginCfgState>,
 ) -> (Status, Json<APIResult<()>>) {
-    if password != config.password {
-        return (Status::Unauthorized, Json(Err(APIError::AuthenticationError)));
+    if password != cfg.0.notification_password {
+        return (
+            Status::Unauthorized,
+            Json(Err(APIError::AuthenticationError)),
+        );
     }
-
-    match database
-        .register_single_event(&Event {
-            timing: Timing::Instant(Utc::now()),
-            id: Utc::now().timestamp_millis().to_string(),
-            plugin: AvailablePlugins::timeline_plugin_notification,
-            event: Notification {
-                app: app.to_string(),
-                title: title.to_string(),
-                content: content.to_string()
-            },
-        })
-        .await
-    {
-        Ok(_) => (Status::Ok, Json(Ok(()))),
-        Err(e) => {
-            server_api::error::error(database.inner().clone(), &e, Some(<Plugin as PluginTrait>::get_type()), &config.error_report_url);
-            (Status::InternalServerError, Json(Err(e.into())))
-        },
-    }
-}
-
-#[get("/icon/<app>")]
-pub async fn app_icon(app: &str, config: &State<ConfigData>) -> Option<NamedFile> {
-    let mut path = config.app_icon_files.clone();
-    path.push(app);
-    match try_exists(&path).await {
-        Ok(true) => NamedFile::open(path).await.ok(),
-        Err(_) | Ok(false) => {
-            let mut path = PathBuf::from("../plugins/timeline_plugin_notification/icons/");
-            path.push(format!("{}.ico", app.to_lowercase()));
-            match try_exists(&path).await {
-                Ok(true) => NamedFile::open(path).await.ok(),
-                Err(_) | Ok(false) => NamedFile::open(PathBuf::from("../plugins/timeline_plugin_notification/icon.svg")).await.ok()
+    let now = Utc::now();
+    let stored = StoredEvent {
+        id: now.timestamp_millis().to_string(),
+        title: title.to_string(),
+        time: Timing::Instant(now),
+        data: match serde_json::to_value(Notification {
+            app: app.to_string(),
+            title: title.to_string(),
+            content: content.to_string(),
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    Status::InternalServerError,
+                    Json(Err(APIError::SerdeJsonError(e.to_string()))),
+                )
             }
+        },
+    };
+    match state.db.upsert(&stored).await {
+        Ok(()) => (Status::Ok, Json(Ok(()))),
+        Err(e) => {
+            state.errors.report(format!("notification insert: {}", e));
+            (
+                Status::InternalServerError,
+                Json(Err(APIError::DatabaseError(e.to_string()))),
+            )
         }
     }
 }
 
+#[get("/icon/<app>")]
+async fn app_icon(
+    _auth: AuthedClient,
+    app: &str,
+    cfg: &State<PluginCfgState>,
+) -> Option<NamedFile> {
+    let path = cfg.0.app_icon_files.join(app);
+    if matches!(try_exists(&path).await, Ok(true)) {
+        if let Ok(f) = NamedFile::open(&path).await {
+            return Some(f);
+        }
+    }
+    if let Some(default) = &cfg.0.default_icon {
+        if let Ok(f) = NamedFile::open(default).await {
+            return Some(f);
+        }
+    }
+    None
+}
+
+// ----- apps map -----
+
 struct AppsMap {
-    apps_map: HashMap<String, String>
+    apps_map: HashMap<String, String>,
 }
 
 impl AppsMap {
-    pub async fn new (path: &Path) -> Result<AppsMap, String> {
-        let apps_map = match File::open(path).await {
-            Ok(mut v) => {  
-                let mut str = String::new();
-                if let Err(e) = v.read_to_string(&mut str).await {
-                    return Err(format!("Error reading apps file: {}", e));
-                }
-
-                str.split('\n').filter_map(|line| {
-                    line.split_once(':').map(|v| (v.0.to_string(), v.1.to_string()))
-                }).collect()
-            },
-            Err(e) => {
-                return Err(format!("Error reading apps file: {}", e));
-            }
-        };
-
+    pub async fn load(path: &Path) -> anyhow::Result<AppsMap> {
+        let mut f = File::open(path).await?;
+        let mut s = String::new();
+        f.read_to_string(&mut s).await?;
+        let apps_map = s
+            .split('\n')
+            .filter_map(|line| line.split_once(':').map(|v| (v.0.to_string(), v.1.to_string())))
+            .collect();
         Ok(AppsMap { apps_map })
     }
 
-    pub fn get_app_name (&self, package: &str) -> Option<&String> {
+    pub fn get(&self, package: &str) -> Option<&String> {
         self.apps_map.get(package)
     }
 }

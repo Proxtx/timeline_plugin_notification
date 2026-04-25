@@ -1,0 +1,10 @@
+[plugin]
+name = "timeline_plugin_notification"
+port = 9007
+token = "change-me"
+
+[config]
+apps_file = "/home/me/Downloads/Usage/Apps"
+app_icon_files = "/home/me/Downloads/Usage/AppIcons/"
+# default_icon = "/path/to/fallback.svg"
+notification_password = "set-me-and-share-with-clients"

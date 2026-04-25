@@ -1,0 +1,20 @@
+.notif-card {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  gap: 6px;
+  background-color: var(--accentColor2, #b0413e);
+  align-items: start;
+}
+
+.notif-icon {
+  width: 60px;
+  aspect-ratio: 1;
+  padding: 12px;
+}
+
+.notif-meta {
+  padding: 6px 0;
+  color: var(--lightColor, #fcfafa);
+  overflow: hidden;
+}
